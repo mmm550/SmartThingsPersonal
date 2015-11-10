@@ -164,6 +164,6 @@ def invertSwitch(invert=true) {
 
 
 def configure() {
-		// send binary sensor report instead of basic set for motion
+		// send config parameter
 		zwave.configurationV1.configurationSet(configurationValue: [1], parameterNumber: 1, size: 1).format()
 }
