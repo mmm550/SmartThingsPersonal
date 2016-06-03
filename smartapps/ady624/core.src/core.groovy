@@ -17,6 +17,23 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  *  Version history
+ *	 6/03/2016 >>> v0.0.063.20160603 - Alpha test version - Save/Load state seems to work. LOL. Local state is piston-wide, global state is across all pistons. Each device gets one state stored locally (one per piston) and one stored globally.
+ *	 6/02/2016 >>> v0.0.062.20160602 - Alpha test version - Updated Follow Up and added Execute. Not fully tested yet.
+ *	 6/02/2016 >>> v0.0.061.20160602 - Alpha test version - Minor bug fixes. Introducing the Follow-Up piston. Chain them together, delay them forever, do whatever you need with them :)
+ *	 6/02/2016 >>> v0.0.060.20160602 - Alpha test version - Fixed a problem with initialization of global variable store on first install of CoRE. Added $time and $time24 to system variables.
+ *	 6/02/2016 >>> v0.0.05f.20160602 - Alpha test version - Dashboard enhancements (capture piston image) and minor bug fixes (i.e. aggregate Send Notification on multiple device actions)
+ *	 6/02/2016 >>> v0.0.05e.20160602 - Alpha test version - Dashboard shows time till next trigger
+ *	 6/01/2016 >>> v0.0.05d.20160601 - Alpha test version - Fixed a problem with compound commands (i.e. thermostat.off instead of off)
+ *	 6/01/2016 >>> v0.0.05c.20160601 - Alpha test version - Updated the startActivity action
+ *	 6/01/2016 >>> v0.0.05b.20160601 - Alpha test version - Updated dashboard, first attempt at displaying an IF statement
+ *	 6/01/2016 >>> v0.0.05a.20160601 - Alpha test version - Fixed a bug introduced in v0.0.059 where some pistons would not run due to state.app.enabled missing
+ *	 6/01/2016 >>> v0.0.059.20160601 - Alpha test version - Replaced the Enabled boolean checkbox in the UI to allow for dashboard ON/OFF integration.
+ *	 6/01/2016 >>> v0.0.058.20160601 - Alpha test version - More dashboard work. Nasty stuff, really. Dashboard is built in angular.js and css3. HTML is minimal :)
+ *	 5/31/2016 >>> v0.0.057.20160531 - Alpha test version - Fixed some bugs with trg_changes missing a parameter, as well as vcmd_setVariable missing a new parameter. (also introduced the Dashboard)
+ *	 5/31/2016 >>> v0.0.056.20160531 - Alpha test version - Initial DTH integration of custom attributes. DTHs can describe their attributes so they become "standard" instead of "custom" in the Attribute list
+ *	 5/30/2016 >>> v0.0.055.20160530 - Alpha test version - Added the repeatAction command - minimal testing done
+ *	 5/30/2016 >>> v0.0.054.20160530 - Alpha test version - Enabled custom commands with simple parameters (boolean, decimal, number, string)
+ *	 5/30/2016 >>> v0.0.053.20160530 - Alpha test version - Enabled simple custom commands, added predefined commands for hue: startLoop, stopLoop, setLoopTime and for Harmony: allOn, allOff, hubOn, hubOff
  *	 5/28/2016 >>> v0.0.052.20160528 - Alpha test version - Fixed a bug where last executed task was not correctly removed
  *	 5/28/2016 >>> v0.0.051.20160528 - Alpha test version - More fixes for casting and variable condition description
  *	 5/27/2016 >>> v0.0.050.20160527 - Alpha test version - Load Attribute from variable done and partially tested. Missing: color support - this is a complex data type...
@@ -120,7 +137,7 @@
 /******************************************************************************/
 
 def version() {
-	return "v0.0.052.20160528"
+	return "v0.0.063.20160603"
 }
 
 
@@ -145,6 +162,7 @@ preferences {
 	page(name: "pageMain")
     
     //CoRE pages
+    page(name: "pageInitializeDashboard")
     page(name: "pageStatistics")
     page(name: "pageChart")
     page(name: "pageGlobalVariables")
@@ -165,6 +183,7 @@ preferences {
     page(name: "pageVariables")  
     page(name: "pageSetVariable")
     page(name: "pageSimulate")
+    page(name: "pageToggleEnabled")
 }
 
 
@@ -221,8 +240,20 @@ def pageMain() {
 /******************************************************************************/
 private pageMainCoRE() {
     //CoRE main page
-    dynamicPage(name: "pageMain", title: "CoRE Pistons", install: true, uninstall: true) {
-        section {
+    dynamicPage(name: "pageMain", title: "", install: true, uninstall: true) {
+    	section() {
+            if (!state.endpoint) {
+            	href "pageInitializeDashboard", title: "CoRE Dashboard", description: "Tap here to initialize the CoRE dashboard"
+            } else {
+            	//reinitialize endpoint
+                initializeCoREEndpoint()
+            	def url = "${state.endpoint}dashboard"
+                debug "Dashboard URL: $url *** DO NOT SHARE THIS LINK WITH ANYONE ***", null, "info"
+                href "", title: "CoRE Dashboard", style: "external", url: url
+            }
+		}        
+        
+        section() {
             app( name: "pistons", title: "Add a CoRE piston...", appName: "CoRE", namespace: "ady624", multiple: true)
         }
 
@@ -248,10 +279,26 @@ private pageMainCoRE() {
     }
 }
 
+private pageInitializeDashboard() {
+    //CoRE Dashboard initialization
+    def success = initializeCoREEndpoint()
+    dynamicPage(name: "pageInitializeDashboard", title: "") {
+    	section() {
+        	if (success) {
+    			paragraph "Success! Your CoRE dashboard is now enabled. Tap Done to continue"
+            } else {
+    			paragraph "Please go to your SmartThings IDE, select the My SmartApps section, click the 'Edit Properties' button of the CoRE app, open the OAuth section and click the 'Enable OAuth in Smart App' button. Click the Update button to finish.\n\nOnce finished, tap Done and try again.", title: "Please enable OAuth for CoRE", required: true, state: null
+            }
+        }
+    }
+}
+
 def pageGlobalVariables() {
 	dynamicPage(name: "pageGlobalVariables", title: "Global Variables", install: false, uninstall: false) {
     	section() {
         	def cnt = 0
+            //initialize the store if it doesn't yet exist
+            if (!state.store) state.store = [:]
             for (def variable in state.store.sort{ it.key }) {
             	def value = getVariable(variable.key, true)
                 paragraph "$value", title: "${variable.key}"
@@ -412,15 +459,18 @@ private pageMainCoREPiston() {
     dynamicPage(name: "pageMain", title: "", uninstall: true, install: true) {
     	def currentState = state.currentState
     	section() {
-        	def enabled = settings["enabled"] != false
+        	def enabled = !!state.config.app.enabled
             def pistonModes = ["Simple", "Latching", "And-If", "Or-If"]
             if (!getConditionTriggerCount(state.config.app.otherConditions)) {
             	pistonModes += ["Then-If", "Else-If"]
             }
             if (listActions(-1).size()) {
             	pistonModes.remove("Simple")
+            } else {
+            	pistonModes.add("Follow-Up")
             }
-        	input "enabled", "bool", description: enabled ? "Current state: ${currentState == null ? "unknown" : currentState}\nCPU: ${cpu()}\t\tMEM: ${mem(false)}" : "", title: "Status: ${enabled ? "RUNNING" : "PAUSED"}", submitOnChange: true, required: false, state: "complete", defaultValue: true
+        	//input "enabled", "bool", description: enabled ? "Current state: ${currentState == null ? "unknown" : currentState}\nCPU: ${cpu()}\t\tMEM: ${mem(false)}" : "", title: "Status: ${enabled ? "RUNNING" : "PAUSED"}", submitOnChange: true, required: false, state: "complete", defaultValue: true
+        	href "pageToggleEnabled", description: enabled ? "Current state: ${currentState == null ? "unknown" : currentState}\nCPU: ${cpu()}\t\tMEM: ${mem(false)}" : "", title: "Status: ${enabled ? "RUNNING" : "PAUSED"}", submitOnChange: true, required: false, state: "complete"
             input "mode", "enum", title: "Piston Mode", required: true, state: null, options: pistonModes, defaultValue: "Simple", submitOnChange: true
             switch (settings.mode) {
                 case "Latching":
@@ -696,7 +746,7 @@ def pageCondition(params) {
             def trigger = false
 
             def branchId = getConditionMasterId(condition.id)
-            def supportsTriggers = (branchId == 0) || (settings.mode in ["Latching", "And-If", "Or-If"])
+            def supportsTriggers = (settings.mode != "Follow-Up") && ((branchId == 0) || (settings.mode in ["Latching", "And-If", "Or-If"]))
             dynamicPage(name: "pageCondition", title: (condition.trg ? "Trigger" : "Condition") + " #$id", uninstall: false, install: false) {
                 section() {
                     if (!settings["condDevices$id"] || (settings["condDevices$id"].size() == 0)) {
@@ -739,7 +789,8 @@ def pageCondition(params) {
                                                     }
                                                     if (value.contains("variable")) {
                                                         //using a time offset
-                                                        input "condVar$id#$i", "enum", options: varList, title: "Variable", required: true, multiple: false, submitOnChange: true
+                                                        def var = settings["condVar$id#$i"]
+                                                        input "condVar$id#$i", "enum", options: varList, title: "Variable${ var ? " [${getVariable(var, true)}]" : ""}", required: true, multiple: false, submitOnChange: true
                                                     }
                                                     if (comparison.contains("around") || !(value.contains('every') || value.contains('custom'))) {
                                                         //using a time offset
@@ -899,18 +950,25 @@ def pageCondition(params) {
                                     def value = settings["condValue$id#$i"]
                                     def device = settings["condDev$id#$i"]
                                     def variable = settings["condVar$id#$i"]
+                                    if (variable) {
+                                    	value = null
+                                        device = null
+                                    }
+                                    if (device) {
+                                    	value = null
+                                    }
                                     if (!extraComparisons || ((device == null) && (variable == null))) {
                                         input "condValue$id#$i", type == "boolean" ? "enum" : type, title: (comp.parameters == 1 ? "Value" : "${i == 1 ? "From" : "To"} value"), options: type == "boolean" ? ["true", "false"] : attr.options, range: attr.range, required: true, multiple: type == "boolean" ? false : comp.multiple, submitOnChange: true
                                     }
                                     if (extraComparisons) {
+                                        if ((value == null) && (device == null)) {
+                                            input "condVar$id#$i", "enum", options: varList, title: (variable == null ? "... or choose a variable to compare ..." : (comp.parameters == 1 ? "Variable value${ variable ? " [${getVariable(variable, true)}]" : ""}" : "${i == 1 ? "From" : "To"} variable value${ variable ? " [${getVariable(variable, true)}]" : ""}")), required: true, multiple: comp.multiple, submitOnChange: true, capitalization: "none"
+                                        }
                                         if ((value == null) && (variable == null) && (allowDeviceComparisons)) {
                                             input "condDev$id#$i", "capability.${type == "boolean" ? "switch" : "sensor"}", title: (device == null ? "... or choose a device to compare ..." : (comp.parameters == 1 ? "Device value" : "${i == 1 ? "From" : "To"} device value")), required: true, multiple: false, submitOnChange: true
                                             if (device) {
                                                 input "condAttr$id#$i", "enum", title: "Attribute", options: listCommonDeviceAttributes([device]), required: true, multiple: false, submitOnChange: true, defaultValue: attribute
                                             }
-                                        }
-                                        if ((value == null) && (device == null)) {
-                                            input "condVar$id#$i", "enum", options: varList, title: (variable == null ? "... or choose a variable to compare ..." : (comp.parameters == 1 ? "Variable value" : "${i == 1 ? "From" : "To"} variable value")), required: true, multiple: comp.multiple, submitOnChange: true, capitalization: "none"
                                         }
                                         if (((variable != null) || (device != null)) && ((type == "number") || (type == "decimal"))) {
                                             input "condOffset$id#$i", type, range: "*..*", title: "Offset (+/-" + (attr.unit ? " ${attr.unit})" : ")"), required: true, multiple: false, defaultValue: 0, submitOnChange: true
@@ -1095,6 +1153,7 @@ def pageActionGroup(params) {
     if (conditionId < 0) {
     	switch (settings.mode) {
         	case "Simple":
+        	case "Follow-Up":
             	block = ""
             	value = false
                 break
@@ -1273,7 +1332,7 @@ def pageAction(params) {
                                 def virtual = (cmd && cmd.startsWith(virtualCommandPrefix()))
                                 def custom = (cmd && cmd.startsWith(customCommandPrefix()))
                                 cmd = cleanUpCommand(cmd)
-                                def command = null
+                                def command = null                               
                                 if (virtual) {
                                     //dealing with a virtual command
                                     command = getVirtualCommandByDisplay(cmd)
@@ -1294,19 +1353,26 @@ def pageAction(params) {
                                                     def description = desc.size() == 2 ? desc[1].trim() : null
                                                     href "pageSetVariable", params: [actionId: id, taskId: tid], title: title, description: description, required: true, state: description ? "complete" : null, submitOnChange: true
                                                     if (description) {
-                                                    	def value = task_vcmd_setVariable(null, task, true)
+                                                    	def value = task_vcmd_setVariable(null, action, task, true)
                                                     	paragraph "Current evaluation: " + value
                                                     }
 													break
                                                 }
                                                 if (param.type == "attribute") {
-                                                    input "actParam$id#$tid-$i", "devices", options: listCommonDeviceAttributes(devices), title: param.title, required: param.required, submitOnChange: param.last, multiple: false
+                                                    input "actParam$id#$tid-$i", "enum", options: listCommonDeviceAttributes(devices), title: param.title, required: param.required, submitOnChange: param.last, multiple: false
                                                 } else if (param.type == "attributes") {
-                                                    input "actParam$id#$tid-$i", "devices", options: listCommonDeviceAttributes(devices), title: param.title, required: param.required, submitOnChange: param.last, multiple: true
+                                                    input "actParam$id#$tid-$i", "enum", options: listCommonDeviceAttributes(devices), title: param.title, required: param.required, submitOnChange: param.last, multiple: true
                                                 } else if (param.type == "variable") {
                                                     input "actParam$id#$tid-$i", "enum", options: listVariables(true), title: param.title, required: param.required, submitOnChange: param.last, multiple: false
                                                 } else if (param.type == "variables") {
                                                     input "actParam$id#$tid-$i", "enum", options:  listVariables(true), title: param.title, required: param.required, submitOnChange: param.last, multiple: true
+                                                } else if (param.type == "stateVariable") {
+                                                    input "actParam$id#$tid-$i", "enum", options: listStateVariables(true), title: param.title, required: param.required, submitOnChange: param.last, multiple: false
+                                                } else if (param.type == "stateVariables") {
+                                                    input "actParam$id#$tid-$i", "enum", options:  listStateVariables(true), title: param.title, required: param.required, submitOnChange: param.last, multiple: true
+                                                } else if (param.type == "piston") {
+                                                	def pistons = parent.listPistons()
+                                                    input "actParam$id#$tid-$i", "enum", options: pistons, title: param.title, required: param.required, submitOnChange: param.last, multiple: false
                                                 } else if (param.type == "routine") {
                                                 	def routines = location.helloHome?.getPhrases()*.label
                                                     input "actParam$id#$tid-$i", "enum", options: routines, title: param.title, required: param.required, submitOnChange: param.last, multiple: false
@@ -1329,6 +1395,19 @@ def pageAction(params) {
                                             i += 1
                                         }
                                     }
+                                } else if (custom) {
+                                	//custom command parameters... complicated stuff
+                                    def i = (int) 1
+                                    while (true) {
+                                    	def type = settings["actParam$id#$tid-$i"]
+                                        def j = (int) Math.floor((i - 1)/2) + 1
+                                        input "actParam$id#$tid-$i", "enum", options: ["boolean", "decimal", "number", "string"], title: type ? "Parameter #$j type" : "Add a parameter", required: false, submitOnChange: true, multiple: false
+                                        if (!type) break
+                                        i += 1
+                                        input "actParam$id#$tid-$i", type, range: "*..*", title: "Parameter #$j value", required: true, submitOnChange: true, multiple: false
+                                        i += 1
+                                    }
+                                
                                 }
                                 idx += 1
                             }
@@ -1351,8 +1430,8 @@ def pageAction(params) {
                 }
 
             	section(title: "Advanced options") {
-                	paragraph "When an action schedules tasks for a certain device or devices, these new tasks may cause a conflict with pending future scheduled tasks for the same device or devices. The task override scope defines how these conflicts are handled. Depending on your choice, the following pending tasks are cancelled:\n ● None - no pending task is cancelled\n ● Action - only tasks scheduled by the same action are cancelled (default)\n ● Local - only local tasks (scheduled by the same piston) are cancelled\n ● Global - all global tasks (scheduled by any piston in the CoRE) are cancelled"
-                	input "actTOS$id", "enum", title: "Task override scope", options:["None", "Action", "Local", "Global"], defaultValue: "Action", required: true
+                	paragraph "When an action schedules tasks for a certain device or devices, these new tasks may cause a conflict with pending future scheduled tasks for the same device or devices. The task override scope defines how these conflicts are handled. Depending on your choice, the following pending tasks are cancelled:\n ● None - no pending task is cancelled\n ● Action - only tasks scheduled by the same action are cancelled\n ● Local - only local tasks (scheduled by the same piston) are cancelled (default)\n ● Global - all global tasks (scheduled by any piston in the CoRE) are cancelled"
+                	input "actTOS$id", "enum", title: "Task override scope", options:["None", "Action", "Local", "Global"], defaultValue: "Local", required: true
                 	input "actTCP$id", "enum", title: "Task cancellation policy", options:["None", "Cancel on piston state change"], defaultValue: "None", required: true
                 }
 
@@ -1566,6 +1645,16 @@ def pageSimulate() {
     }
 }
 
+def pageToggleEnabled() {
+	state.config.app.enabled = !state.config.app.enabled
+    if (state.app) state.app.enabled = !!state.config.app.enabled
+   	dynamicPage(name: "pageToggleEnabled", title: "", uninstall: false, install: false) {
+    	section() {
+    		paragraph "The piston is now ${state.config.app.enabled ? "running" : "paused"}."
+        }
+    }
+}
+
 private buildIfContent() {
 	buildIfContent(state.config.app.conditions.id, 0)
 }
@@ -1650,11 +1739,13 @@ private buildIfContent(id, level) {
 /********** COMMON INITIALIZATION METHODS **********/
 def installed() {
 	initialize()
+    return true
 }
 
 def updated() {
 	unsubscribe()
 	initialize()
+    return true
 }
 
 def initialize() {
@@ -1716,6 +1807,18 @@ def getVariable(name) {
     }
     if (name == "\$minute") return adjustTime().minutes
     if (name == "\$second") return adjustTime().seconds
+    if (name == "\$time") {
+		def t = adjustTime()
+        def h = t.hours
+        def m = t.minutes
+        return (h == 0 ? 12 : (h > 12 ? h - 12 : h)) + ":" + (m < 10 ? "0$m" : "$m") + " " + (h <12 ? "A.M." : "P.M.")
+    }
+    if (name == "\$time24") {
+		def t = adjustTime()
+        def h = t.hours
+        def m = t.minutes
+        return h + ":" + (m < 10 ? "0$m" : "$m")
+    }
     if (name == "\$day") return adjustTime().date
     if (name == "\$dayOfWeek") return getDayOfWeekNumber()
     if (name == "\$dayOfWeekName") return getDayOfWeekName()
@@ -1768,6 +1871,32 @@ def setVariable(name, value, system = false) {
     //TODO: date&time triggers based on variables being changed need to be reevaluated
 }
 
+
+def getStateVariable(name, global = false) {
+    name = sanitizeVariableName(name)
+	if (!name) {
+    	return null
+    }
+    if (parent && global) {
+    	return parent.getStateVariable(name)
+    } else {
+		return state.stateStore[name]
+    }
+}
+
+def setStateVariable(name, value, global = false) {
+    name = sanitizeVariableName(name)
+	if (!name) {
+    	return
+    }
+    if (parent && global) {
+    	parent.setStateVariable(name, value)
+    } else {
+    	debug "Storing state variable $name with value $value"
+		state.stateStore[name] = value
+    }
+}
+
 private testDataType(value, dataType) {
 	if (!dataType || !value) return true
 	switch (dataType) {
@@ -1784,7 +1913,7 @@ private testDataType(value, dataType) {
     return false
 }
 
-def listVariables(config = false, dataType = null, listLocal = true, listGlobal = true, listSystem = true, listState = false) {
+def listVariables(config = false, dataType = null, listLocal = true, listGlobal = true, listSystem = true) {
 	def result = []
     def parentResult = null
     def systemResult = []
@@ -1804,7 +1933,7 @@ def listVariables(config = false, dataType = null, listLocal = true, listGlobal 
     }
     if (listGlobal) {
         if (parent) {
-            parentResult = parent.listVariables(config, dataType, listLocal, listGlobal, false, listState)
+            parentResult = parent.listVariables(config, dataType)
         }
     }
     if (parent && config) {
@@ -1857,7 +1986,48 @@ def listVariables(config = false, dataType = null, listLocal = true, listGlobal 
     return result.sort() + (parentResult ? parentResult.sort() : []) + systemResult.sort()
 }
 
-
+def listStateVariables(config = false, dataType = null, listLocal = true, listGlobal = true) {
+	def result = []
+    def parentResult = null
+    if (listLocal) {
+        for (variable in state.stateStore) {
+        	if (!dataType || testDataType(variable.value, dataType)) {
+	            result.push(variable.key)
+            }
+        }
+    }
+    if (listGlobal) {
+        if (parent) {
+            parentResult = parent.listStateVariables(config, dataType)
+        }
+    }
+    if (parent && config) {
+    	//look for variables set during conditions
+        def list = settings.findAll{it.key.startsWith("actTask")}
+        for (it in list) {
+        	if (it.value) {
+            	def virtualCommand = getVirtualCommandByDisplay(cleanUpCommand(it.value))
+                if (virtualCommand && (virtualCommand.stateVarEntry != null)) {
+                	def var = sanitizeVariableName(settings[it.key.replace("actTask", "actParam") + "-${virtualCommand.stateVarEntry}"])
+                    if (var) {
+                        if (var.startsWith("@")) {
+                            //global
+                            if (!(var in parentResult)) {
+                                parentResult.push(var)
+                            }
+                        } else {
+                            //local
+                            if (!(var in result)) {
+                                result.push(var)
+                            }
+                        }
+                    }
+				}
+            }
+        }
+    }
+    return result.sort() + (parentResult ? parentResult.sort() : [])
+}
 
 
 
@@ -1882,10 +2052,103 @@ def listVariables(config = false, dataType = null, listLocal = true, listGlobal 
 
 def initializeCoRE() {
     state.store = state.store ? state.store : [:]
+    state.stateStore = state.stateStore ? state.stateStore : [:]
     state.systemStore = state.systemStore ? state.systemStore : initialSystemStore()
 }
 
 def childUninstalled() {}
+
+private initializeCoREEndpoint() {
+	if (!state.endpoint) {
+        try {
+            def accessToken = createAccessToken()
+            if (accessToken) {
+                state.endpoint = apiServerUrl("/api/token/${accessToken}/smartapps/installations/${app.id}/")
+            }
+        } catch(e) {
+            state.endpoint = null
+        }
+    }
+    return state.endpoint
+}
+
+mappings {
+	path("/dashboard") {action: [GET: "api_dashboard"]}
+	path("/getDashboardData") {action: [GET: "api_getDashboardData"]}
+	path("/pause") {action: [POST: "api_pause"]}
+	path("/resume") {action: [POST: "api_resume"]}
+	path("/piston") {action: [POST: "api_piston"]}
+}
+
+def api_dashboard() {
+	def cdn = "https://core.caramaliu.com/dashboard"
+	render contentType: "text/html", data: "<!DOCTYPE html><html lang=\"en\" ng-app=\"CoRE\"><base href=\"${state.endpoint}\"><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><link rel=\"stylesheet prefetch\" href=\"$cdn/static/css/components/bootstrap.min.css\"/><link rel=\"stylesheet prefetch\" href=\"$cdn/static/css/components/angular-loading-bar.min.css\"/><link rel=\"stylesheet prefetch\" href=\"$cdn/static/css/components/font-awesome.min.css\"/><link rel=\"stylesheet prefetch\" href=\"$cdn/static/css/app.css\"/><script type=\"text/javascript\" src=\"$cdn/static/js/components/html2canvas.min.js\"></script><script type=\"text/javascript\" src=\"$cdn/static/js/components/angular.min.js\"></script><script type=\"text/javascript\" src=\"$cdn/static/js/components/angular-route.min.js\"></script><script type=\"text/javascript\" src=\"$cdn/static/js/components/angular-resource.min.js\"></script><script type=\"text/javascript\" src=\"$cdn/static/js/components/angular-sanitize.min.js\"></script><script type=\"text/javascript\" src=\"$cdn/static/js/components/angular-loading-bar.min.js\"></script><script type=\"text/javascript\" src=\"$cdn/static/js/app.js\"></script><script type=\"text/javascript\" src=\"$cdn/static/js/modules/dashboard.module.js\"></script></head><body><ng-view></ng-view></body></html>"
+}
+
+def api_getDashboardData() {
+	def result = [
+    	pistons: []
+    ]
+    for(app in getChildApps()) {
+    	result.pistons.push app.getSummary()
+    }
+    //sort the pistons
+    result.pistons = result.pistons.sort { it.l }    
+	return result
+}
+
+def api_pause() {
+	def data = request?.JSON
+    def pistonId = data?.pistonId
+    if (pistonId) {
+    	def child = getChildApps()?.find { it.id == pistonId }
+        if (child) {
+        	child.pause()
+        }
+    }
+    return api_getDashboardData()
+}
+
+def api_resume() {
+	def data = request?.JSON
+    def pistonId = data?.pistonId
+    if (pistonId) {
+    	def child = getChildApps().find { it.id == pistonId }
+        if (child) {
+        	child.resume()
+        }
+    }
+    return api_getDashboardData()
+}
+
+def api_piston() {
+	def data = request?.JSON
+    def pistonId = data?.pistonId
+    if (pistonId) {
+    	def child = getChildApps().find { it.id == pistonId }
+        if (child) {
+        	def result = [
+            	app: child.getPistonApp(),
+                tasks: child.getPistonTasks(),
+                summary: child.getSummary()
+            ]
+            if (result.app.conditions) withEachCondition(result.app.conditions, "api_piston_prepare", child)
+            if (result.app.otherConditions) withEachCondition(result.app.otherConditions, "api_piston_prepare", child)
+            for(def action in result.app.actions) {
+            	action.desc = child.getActionDeviceList(action)
+            	for(def task in action.t) {
+                	task.desc = getTaskDescription(task)
+                }
+            }
+            return result
+        }        
+    }
+    return null
+}
+
+private api_piston_prepare(condition, child) {
+	condition.desc = child.getPistonConditionDescription(condition)
+}
 
 /******************************************************************************/
 /*** CoRE PUBLISHED METHODS													***/
@@ -1893,6 +2156,29 @@ def childUninstalled() {}
 
 def expertMode() {
 	return !!settings["expertMode"]
+}
+
+def listPistons(type = null) {
+	if (!type) {
+    	return getChildApps()*.label.sort { it }
+    }
+	def result = []
+	def pistons = getChildApps()
+    for (piston in pistons) {
+    	if (piston.getPistonType() == type) {
+        	result.push piston.label
+        }
+    }
+    return result.sort{ it }
+}
+
+def execute(pistonName) {
+	def piston = getChildApps().find{ it.label == pistonName }
+    if (piston) {
+    	//fire up the piston
+    	return piston.executeHandler()
+    }
+    return null
 }
 
 def updateChart(name, value) {
@@ -2012,12 +2298,14 @@ def initializeCoREPiston() {
     state.app = state.config ? state.config.app : state.app
     //save misc
     state.app.mode = settings.mode
+    state.app.description = settings.description
     
 	state.run = "app"
     
     state.cache = [:]
     state.tasks = state.tasks ? state.tasks : [:]
     state.store = state.store ? state.store : [:]
+    state.stateStore = state.stateStore ? state.stateStore : [:]
     state.systemStore = state.systemStore ? state.systemStore : initialSystemStore()
     for (var in initialSystemStore()) {
     	if (!state.containsKey(var.key)) {
@@ -2025,10 +2313,11 @@ def initializeCoREPiston() {
         }
     }
     
-    subscribeToAll(state.app)
+    if (state.app.mode != "Follow-Up") {
+    	//follow-up pistons don't subscribe to anything
+    	subscribeToAll(state.app)
+    }
   
-    subscribe(app, appHandler)
-    
     state.remove("config")
     //uncomment next line to clear system store
     //state.systemStore = [:]
@@ -2050,10 +2339,19 @@ def initializeCoREPiston() {
 /* prepare configuration version of app */
 private configApp() {
 	//TODO: rebuild (object-oriented) app object from settings
-	//prepare stores    
+	//prepare stores
     state.temp = [:]
     state.store = state.store ? state.store : [:]
+    state.stateStore = state.stateStore ? state.stateStore : [:]
     state.systemStore = state.systemStore ? state.systemStore : initialSystemStore()
+    for (var in initialSystemStore()) {
+    	if (!state.containsKey(var.key)) {
+        	state.systemStore[var.key] = null
+        }
+    }
+    if (!state.app) {
+    	state.app = [:]
+    }
     
 	if (!state.config) {
     	//initiate config app, since we have no running version yet (not yet installed)
@@ -2068,11 +2366,14 @@ private configApp() {
             state.config.app.otherConditions = createCondition(true)
             state.config.app.otherConditions.id = -1
             state.config.app.actions = []
+            state.config.app.enabled = true
         }
     }
     //get expert savvy
     state.config.expertMode = parent.expertMode()
 	state.config.app.mode = settings.mode
+	state.config.app.description = settings.description
+    state.config.app.enabled = !!state.config.app.enabled
 }
 private subscribeToAll(app) {
 	debug "Initializing subscriptions...", 1
@@ -2261,14 +2562,14 @@ private updateCondition(condition) {
     condition.dt = settings["condDataType${condition.id}"]
     condition.trg = !!isComparisonOptionTrigger(condition.attr, condition.comp)
 	condition.mode = condition.trg ? "Any" : (settings["condMode${condition.id}"] ? settings["condMode${condition.id}"] : "Any")
-    condition.val1 = settings["condValue${condition.id}#1"]
-    condition.dev1 = settings["condDev${condition.id}#1"] ? getDeviceLabel(settings["condDev${condition.id}#1"]) : null
-    condition.attr1 = settings["condAttr${condition.id}#1"] ? getDeviceLabel(settings["condAttr${condition.id}#1"]) : null
     condition.var1 = settings["condVar${condition.id}#1"]
-    condition.val2 = settings["condValue${condition.id}#2"]
-    condition.dev2 = settings["condDev${condition.id}#2"] ? getDeviceLabel(settings["condDev${condition.id}#2"]) : null
-    condition.attr2 = settings["condAttr${condition.id}#2"] ? getDeviceLabel(settings["condAttr${condition.id}#2"]) : null
+    condition.dev1 = condition.var1 ? null : settings["condDev${condition.id}#1"] ? getDeviceLabel(settings["condDev${condition.id}#1"]) : null
+    condition.attr1 = condition.var1 ? null : settings["condAttr${condition.id}#1"] ? getDeviceLabel(settings["condAttr${condition.id}#1"]) : null
+    condition.val1 = condition.var1  || condition.dev1 ? null : settings["condValue${condition.id}#1"]
     condition.var2 = settings["condVar${condition.id}#2"]
+    condition.dev2 = condition.var2 ? null : settings["condDev${condition.id}#2"] ? getDeviceLabel(settings["condDev${condition.id}#2"]) : null
+    condition.attr2 = condition.var2 ? null : settings["condAttr${condition.id}#2"] ? getDeviceLabel(settings["condAttr${condition.id}#2"]) : null
+    condition.val2 = condition.var2 || condition.dev2 ? null : settings["condValue${condition.id}#2"]
     condition.for = settings["condFor${condition.id}"]
     condition.fort = settings["condTime${condition.id}"]
     condition.t1 = settings["condTime${condition.id}#1"]
@@ -2468,6 +2769,23 @@ private updateAction(action) {
                             i++
                         }
                     }
+                } else if (custom) {
+                	//custom parameters
+                    def i = 1
+                    while (true) {
+                        //value
+                        def type = settings["actParam$id#$tid-$i"]
+                        if (type) {
+    	                    //parameter type
+	                        task.p.push([i: i, t: "string", d: settings["actParam$id#$tid-$i"]])
+    	                    //parameter value
+        	                task.p.push([i: i + 1, t: type, d: settings["actParam$id#$tid-${i + 1}"]])
+                        } else {
+                        	break
+                       	}
+						i += 2
+                    }
+                    
                 }
                 action.t.push(task)
             }
@@ -2510,6 +2828,7 @@ private listActionDevices(actionId) {
     }
 	return devices
 }
+
 private getActionDescription(action) {
 	if (!action) return null
     def devices = (action.l ? ["location"] : listActionDevices(action.id))
@@ -2538,6 +2857,12 @@ private getActionDescription(action) {
         result += "\n ► " + getTaskDescription(task)
     }
     return result
+}
+
+def getActionDeviceList(action) {
+	if (!action) return null
+    def devices = (action.l ? ["location"] : listActionDevices(action.id))
+    return buildDeviceNameList(devices, "and")
 }
 
 private getTaskDescription(task) {
@@ -2625,9 +2950,6 @@ private getTaskDescription(task) {
 /*** ENTRY AND EXIT POINT HANDLERS											***/
 /******************************************************************************/
 
-def appHandler() {
-}
-
 def deviceHandler(evt) {
 	entryPoint()
 	//executes whenever a device in the primary if block has an event
@@ -2695,6 +3017,20 @@ def recoveryHandler() {
     debug "Done in ${perf}ms", -1
     exitPoint(perf)
 }
+
+def executeHandler() {
+	entryPoint()
+	//executes whenever a device in the primary if block has an event
+	//starting primary IF block evaluation
+    def perf = now()
+    debug "Received an execute request", 1
+    broadcastEvent([name: "time", date: new Date(), deviceId: "time", conditionId: null], true, false)
+    processTasks()
+    perf = now() - perf
+    debug "Done in ${perf}ms", -1
+    exitPoint(perf)
+    return state.currentState
+}
 private entryPoint() {
 	//initialize whenever app runs
     //use the "app" version throughout
@@ -2757,7 +3093,7 @@ private broadcastEvent(evt, primary, secondary) {
 	//filter duplicate events and broadcast event to proper IF blocks
     def perf = now()
     def delay = perf - evt.date.getTime()
-	debug "Processing event ${evt.name}${evt.device ? " for device ${evt.device}" : ""}${evt.deviceId ? " with id ${evt.deviceId}" : ""}${evt.value ? ", value ${evt.value}" : ""}, generated on ${evt.date}, about ${delay}ms ago", 1, "trace"
+	debug "Processing event ${evt.name}${evt.device ? " for device ${evt.device}" : ""}${evt.deviceId ? " with id ${evt.deviceId}" : ""}${evt.value ? ", value ${evt.value}" : ""}, generated on ${evt.date}, about ${delay}ms ago (${version()})", 1, "trace"
     //save previous event
 	setVariable("\$previousEventReceived", getVariable("\$currentEventReceived"), true)
     setVariable("\$previousEventDevice", getVariable("\$currentEventDevice"), true)
@@ -2875,6 +3211,7 @@ private broadcastEvent(evt, primary, secondary) {
                     }
                     break
                 case "Simple":
+                case "Follow-Up":
                 	result2 = !result1
                     if (currentState != result1) {
                         state.currentState = result1
@@ -3036,6 +3373,13 @@ private evaluateConditionSet(evt, primary, force = false) {
 	//if (pushNote) {
     	//sendPush(pushNote + "Event processed in ${perf}ms")
     //}
+    if (evaluation != null) {
+    	if (primary) {
+        	app.conditions.eval = evaluation
+        } else {
+        	app.otherConditions.eval = evaluation
+        }
+    }
     return evaluation
 }
 
@@ -3076,6 +3420,7 @@ private evaluateCondition(condition, evt = null) {
 
         //apply the NOT, if needed
         result = condition.not ? !result : result
+        condition.eval = result
 
         //store variables (only if evt is available, i.e. not simulating)
         if (evt) {
@@ -3257,7 +3602,7 @@ private evaluateDeviceCondition(condition, evt) {
                     if (state.sim) state.sim.evals.push(msg)
 					debug msg
                 } else {
-                    deviceResult = "$function"(condition, device, condition.attr, oldValue, oldValueSince, currentValue, value1, value2, ownsEvent ? evt : null, evt, momentary)
+                    deviceResult = "$function"(condition, device, condition.attr, oldValue, oldValueSince, currentValue, value1, value2, ownsEvent ? evt : null, evt, momentary, type)
                     def msg = "${deviceResult ? "♣" : "♠"} Function $function for $device's ${condition.attr} [$currentValue] ${condition.comp} '$value1${comp.parameters == 2 ? " - $value2" : ""}' returned $deviceResult"
                     if (state.sim) state.sim.evals.push(msg)
                     debug msg
@@ -3547,15 +3892,31 @@ private testDateTimeFilters(condition, now) {
 }
 
 /* low-level evaluation functions */
-private eval_cond_is(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return eval_cond_is_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_cond_is_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return currentValue == value1
 }
 
-private eval_cond_is_not(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return eval_cond_is_not_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_cond_is_not_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return currentValue != value1
 }
 
-private eval_cond_is_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_is(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return eval_cond_is_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
+}
+
+private eval_cond_is_not(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return eval_cond_is_not_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
+}
+
+private eval_cond_is_true(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return eval_cond_is_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, true, value2, evt, sourceEvt, momentary, dataType)
+}
+
+private eval_cond_is_false(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_true(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
+}
+
+private eval_cond_is_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def v = "$currentValue".trim()
     for(def value in value1) {
         if ("$value".trim() == v)
@@ -3564,49 +3925,41 @@ private eval_cond_is_one_of(condition, device, attribute, oldValue, oldValueSinc
     return false
 }
 
-private eval_cond_is_not_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_is_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_cond_is_not_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_cond_is_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return currentValue == value1
-}
-
-private eval_cond_is_not_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return currentValue != value1
-}
-
-private eval_cond_is_less_than(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_is_less_than(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	return currentValue < value1
 }
 
-private eval_cond_is_less_than_or_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_is_less_than_or_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	return currentValue <= value1
 }
 
-private eval_cond_is_greater_than(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_is_greater_than(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	return currentValue > value1
 }
 
-private eval_cond_is_greater_than_or_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_is_greater_than_or_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	return currentValue >= value1
 }
 
-private eval_cond_is_even(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_is_even(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	try {
    		return Math.round(currentValue).mod(2) == 0
     } catch(all) {}
     return false
 }
 
-private eval_cond_is_odd(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_is_odd(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	try {
    		return Math.round(currentValue).mod(2) == 1
     } catch(all) {}
     return false
 }
 
-private eval_cond_is_inside_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_is_inside_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	if (value1 < value2) {
 		return (currentValue >= value1) && (currentValue <= value2)
     } else {
@@ -3614,7 +3967,7 @@ private eval_cond_is_inside_range(condition, device, attribute, oldValue, oldVal
     }
 }
 
-private eval_cond_is_outside_of_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_is_outside_of_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	if (value1 < value2) {
 		return (currentValue < value1) || (currentValue > value2)
 	} else {
@@ -3645,31 +3998,31 @@ private listPreviousStates(device, attribute, currentValue, minutes, excludeLast
     return result
 }
 
-private eval_cond_changed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_changed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	def minutes = timeToMinutes(condition.fort)
 	def events = device.eventsSince(new Date(now() - minutes * 60000)).findAll{it.name == attribute}
     return (events.size() > 0)
 }
 
-private eval_cond_did_not_change(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_changed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_cond_did_not_change(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_changed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_cond_was(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return eval_cond_was_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_cond_was(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return eval_cond_was_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_cond_was_not(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	eval_cond_was_not_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_cond_was_not(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	eval_cond_was_not_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_cond_was_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (state.value == value1) {
+    	if (cast(state.value, dataType) == value1) {
         	stableTime += state.duration
         } else {
         	break
@@ -3678,13 +4031,13 @@ private eval_cond_was_equal_to(condition, device, attribute, oldValue, oldValueS
     return (stableTime > 0) && (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_cond_was_not_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_not_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (state.value != value1) {
+    	if (cast(state.value, dataType) != value1) {
         	stableTime += state.duration
         } else {
         	break
@@ -3693,13 +4046,13 @@ private eval_cond_was_not_equal_to(condition, device, attribute, oldValue, oldVa
     return (stableTime > 0) && (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_cond_was_less_than(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_less_than(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (state.value < value1) {
+    	if (cast(state.value, dataType) < value1) {
         	stableTime += state.duration
         } else {
         	break
@@ -3708,13 +4061,13 @@ private eval_cond_was_less_than(condition, device, attribute, oldValue, oldValue
     return (stableTime > 0) && (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_cond_was_less_than_or_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_less_than_or_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (state.value <= value1) {
+    	if (cast(state.value, dataType) <= value1) {
         	stableTime += state.duration
         } else {
         	break
@@ -3723,13 +4076,13 @@ private eval_cond_was_less_than_or_equal_to(condition, device, attribute, oldVal
     return (stableTime > 0) && (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_cond_was_greater_than(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_greater_than(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (state.value > value1) {
+    	if (cast(state.value, dataType) > value1) {
         	stableTime += state.duration
         } else {
         	break
@@ -3738,13 +4091,13 @@ private eval_cond_was_greater_than(condition, device, attribute, oldValue, oldVa
     return (stableTime > 0) && (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_cond_was_greater_than_or_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_greater_than_or_equal_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (state.value >= value1) {
+    	if (cast(state.value, dataType) >= value1) {
         	stableTime += state.duration
         } else {
         	break
@@ -3753,13 +4106,13 @@ private eval_cond_was_greater_than_or_equal_to(condition, device, attribute, old
     return (stableTime > 0) && (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_cond_was_even(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_even(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (state.value.isInteger() ? state.value.toInteger().mod(2) == 0 : false) {
+    	if (cast(state.value, "number").mod(2) == 0) {
         	stableTime += state.duration
         } else {
         	break
@@ -3768,13 +4121,13 @@ private eval_cond_was_even(condition, device, attribute, oldValue, oldValueSince
     return (stableTime > 0) && (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_cond_was_odd(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_odd(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (state.value.isInteger() ? state.value.toInteger().mod(2) == 1 : false) {
+    	if (cast(state.value, "number").mod(2) == 1) {
         	stableTime += state.duration
         } else {
         	break
@@ -3783,13 +4136,14 @@ private eval_cond_was_odd(condition, device, attribute, oldValue, oldValueSince,
     return (stableTime > 0) && (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_cond_was_inside_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_inside_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (value1 < value2 ? (state.value >= value1) && (state.value <= value2) : (state.value >= value2) && (state.value <= value1)) {
+    	def v = cast(state.value, dataType)
+    	if (value1 < value2 ? (v >= value1) && (v <= value2) : (v >= value2) && (v <= value1)) {
         	stableTime += state.duration
         } else {
         	break
@@ -3798,13 +4152,14 @@ private eval_cond_was_inside_range(condition, device, attribute, oldValue, oldVa
     return (stableTime > 0) && (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_cond_was_outside_of_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_cond_was_outside_of_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
     def time = timeToMinutes(condition.fort)
 	def states = listPreviousStates(device, attribute, currentValue, time, evt ? 1 : 0)
     def thresholdTime = time * 60000
     def stableTime = 0
     for (state in states) {
-    	if (value1 < value2 ? (state.value < value1) || (state.value > value2) : (state.value < value2) || (state.value > value1)) {
+        def v = cast(state.value, dataType)
+    	if (value1 < value2 ? (v < value1) || (v > value2) : (v < value2) || (v > value1)) {
         	stableTime += state.duration
         } else {
         	break
@@ -3814,76 +4169,76 @@ private eval_cond_was_outside_of_range(condition, device, attribute, oldValue, o
 }
 
 /* triggers */
-private eval_trg_changes(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_trg_changes(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	return momentary || (oldValue != currentValue)
 }
 
-private eval_trg_changes_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return (momentary || !eval_cond_is_equal_to(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary)) &&
-    		eval_cond_is_equal_to(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_changes_to(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return (momentary || !eval_cond_is_equal_to(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType)) &&
+    		eval_cond_is_equal_to(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_changes_to_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return (momentary || !eval_cond_is_one_of(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary)) &&
-    		eval_cond_is_one_of(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_changes_to_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return (momentary || !eval_cond_is_one_of(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType)) &&
+    		eval_cond_is_one_of(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_changes_away_from(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return (momentary || !eval_cond_is_not_equal_to(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary)) &&
-    		eval_cond_is_not_equal_to(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_changes_away_from(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return (momentary || !eval_cond_is_not_equal_to(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType)) &&
+    		eval_cond_is_not_equal_to(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_changes_away_from_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return (momentary || !eval_cond_is_not_one_of(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary)) &&
-    		eval_cond_is_not_one_of(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_changes_away_from_one_of(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return (momentary || !eval_cond_is_not_one_of(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType)) &&
+    		eval_cond_is_not_one_of(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_drops_below(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_is_less_than(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary) &&
-    		eval_cond_is_less_than(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_drops_below(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_less_than(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType) &&
+    		eval_cond_is_less_than(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_drops_to_or_below(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_is_less_than_or_equal_to(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary) &&
-    		eval_cond_is_less_than_or_equal_to(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_drops_to_or_below(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_less_than_or_equal_to(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType) &&
+    		eval_cond_is_less_than_or_equal_to(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_raises_above(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_is_greater_than(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary) &&
-    		eval_cond_is_greater_than(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_raises_above(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_greater_than(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType) &&
+    		eval_cond_is_greater_than(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_raises_to_or_above(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_is_greater_than_or_equal_to(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary) &&
-    		eval_cond_is_greater_than_or_equal_to(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_raises_to_or_above(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_greater_than_or_equal_to(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType) &&
+    		eval_cond_is_greater_than_or_equal_to(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_changes_to_even(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_is_even(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary) &&
-    		eval_cond_is_even(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_changes_to_even(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_even(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType) &&
+    		eval_cond_is_even(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_changes_to_odd(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_is_odd(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary) &&
-    		eval_cond_is_odd(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_changes_to_odd(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_odd(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType) &&
+    		eval_cond_is_odd(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_enters_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_is_inside_range(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary) &&
-    		eval_cond_is_inside_range(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_enters_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_inside_range(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType) &&
+    		eval_cond_is_inside_range(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_exits_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
-	return !eval_cond_is_outside_of_range(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary) &&
-    		eval_cond_is_outside_of_range(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary)
+private eval_trg_exits_range(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
+	return !eval_cond_is_outside_of_range(condition, device, attribute, null, null, oldValue, value1, value2, evt, sourceEvt, momentary, dataType) &&
+    		eval_cond_is_outside_of_range(condition, device, attribute, null, null, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 
-private eval_trg_executed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_trg_executed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	return (evt && evt.displayName && evt.displayName == value1)
 }
 
 /*
-private eval_trg_changed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_trg_changed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	if (!oldValueSince) return false
     def time = timeToMinutes(condition.fort)
     def thresholdTime = time * 60000
@@ -3891,9 +4246,9 @@ private eval_trg_changed(condition, device, attribute, oldValue, oldValueSince, 
     return (condition.for == "for at least" ? stableTime >= thresholdTime : stableTime < thresholdTime)
 }
 
-private eval_trg_did_not_change(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary) {
+private eval_trg_did_not_change(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType) {
 	if (!oldValueSince) return false
-	return !eval_trg_changed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary)
+	return !eval_trg_changed(condition, device, attribute, oldValue, oldValueSince, currentValue, value1, value2, evt, sourceEvt, momentary, dataType)
 }
 */
 
@@ -3922,13 +4277,15 @@ private scheduleTimeTriggers() {
     }
 }
 
-private scheduleTimeTrigger(condition) {
+private scheduleTimeTrigger(condition, data = null) {
 	if (!condition || !(condition.attr) || (condition.attr != "time")) {
     	return
     }
     def time = condition.trg ? getNextTimeTriggerTime(condition, condition.lt) : getNextTimeConditionTime(condition, condition.lt)
     condition.nt = time
-    scheduleTask("evt", condition.id, null, null, time)
+    if (time) {
+    	scheduleTask("evt", condition.id, null, null, time)
+    }
 }
 
 private scheduleActions(conditionId, stateChanged = false) {
@@ -3976,14 +4333,21 @@ private scheduleAction(action) {
                		def function = "cmd_${command.name}".replace(" ", "_").replace("(", "_").replace(")", "_").replace("&", "_")
 					def result = "$function"(action, task, time)
                 	time = (result && result.time) ? result.time : time
+                    command.delay = (result && result.delay) ? result.delay : 0
                     if (result && result.waitFor) {
                     	waitFor = result.waitFor
                         waitSince = time
                     }
-                    command = null
+                    if (!result.schedule) {
+                        command = null
+                    }
                 }
             } else {
-                command = getCommandByDisplay(cmd)
+            	if (custom) {
+                	command = [name: cmd]
+                } else {
+	                command = getCommandByDisplay(cmd)
+                }
             }
             if (command) {
                 for (deviceId in deviceIds) {
@@ -4001,7 +4365,7 @@ private scheduleAction(action) {
                     	//an aggregated command schedules one command task for the whole group
                     	deviceId = null
 					}
-                    scheduleTask("cmd", action.id, deviceId, task.i, time, data)
+                    scheduleTask("cmd", action.id, deviceId, task.i, command.delay ? command.delay : time, data)
                     //an aggregated command schedules one command task for the whole group, so there's only one scheduled task, exit
                     if (command.aggregated) break
                 }
@@ -4010,9 +4374,24 @@ private scheduleAction(action) {
     }
 }
 
+
+private cmd_repeatAction(action, task, time) {
+	def result = cmd_wait(action, task, time)
+    result.schedule = true
+    return result
+}
+
+private cmd_followUp(action, task, time) {
+	def result = cmd_wait(action, task, time)
+    result.schedule = true
+    result.delay = result.time
+    result.time = null
+    return result
+}
+
 private cmd_wait(action, task, time) {
 	def result = [:]
-    if (task && task.p && task.p.size() == 2) {
+    if (task && task.p && task.p.size() >= 2) {
         def unit = 60000
         switch (task.p[1].d) {
         	case "seconds":
@@ -4125,6 +4504,7 @@ private getNextTimeTriggerTime(condition, startTime = null) {
 	//get UTC now if no unixTime is provided
 	def unixTime = startTime ? startTime : now()
     //convert that to location's timezone, for comparison
+    def currentTime = adjustTime()
 	def now = adjustTime(unixTime)
 	def attr = getAttributeByName(condition.attr)
     def comparison = cleanUpComparison(condition.comp)
@@ -4133,6 +4513,7 @@ private getNextTimeTriggerTime(condition, startTime = null) {
     if (!attr || !comp || comp.trigger != comparison) {
     	return null
     }
+    
     
     def repeat = (condition.val1 && condition.val1.contains("every") ? condition.val1 : condition.r)
     if (!repeat) {
@@ -4143,6 +4524,7 @@ private getNextTimeTriggerTime(condition, startTime = null) {
     	return null
 	}
     repeat = repeat.replace("every ", "").replace("number of ", "").replace("s", "")
+    
 	//do the work
     def maxCycles = null
 	while ((maxCycles == null) || (maxCycles > 0)) {
@@ -4150,12 +4532,21 @@ private getNextTimeTriggerTime(condition, startTime = null) {
 	    def repeatCycle = false
         if (repeat == "minute") {
             //increment minutes
+            //we need to catch up with the present
+            def pastMinutes = (long) (Math.floor((currentTime.time - now.time) / 60000))
+            if (pastMinutes > 1) {
+            	now = new Date(now.time + pastMinutes * 60000)            
+            }
             now = new Date(now.time + interval * 60000)
             cycles = 1500 //up to 25 hours
         } else if (repeat == "hour") {
             //increment hours
             def m = now.minutes
             def rm = (condition.m ? condition.m : "0").toInteger()
+            def pastHours = (long) (Math.floor((currentTime.time - now.time) / 3600000))
+            if (pastHours > 1) {
+            	now = new Date(now.time + pastHours * 3600000)
+            }
             now = new Date(now.time + (m < rm ? interval - 1 : interval) * 3600000)
             now = new Date(now.year, now.month, now.date, now.hours, rm, 0)
             cycles = 744
@@ -4407,6 +4798,7 @@ private getNextTimeTriggerTime(condition, startTime = null) {
             	return result
             }
         }       
+
         maxCycles = (maxCycles == null ? cycles : maxCycles) - 1
 	}
 }
@@ -4419,9 +4811,10 @@ def keepAlive() {
 private processTasks() {
 	//pfew, off to process tasks
     //first, we make a variable to help us pick up where we left off
+    state.rerunSchedule = false
     def tasks = null
     def perf = now()
-    debug "Processing tasks", 1, "trace"
+    debug "Processing tasks (${version()})", 1, "trace"
     
     try {
 
@@ -4475,7 +4868,9 @@ private processTasks() {
         }
 
         //okay, now let's give the time triggers a chance to readjust
-        scheduleTimeTriggers()
+        if (state.app?.mode != "Follow-Up") {
+	        scheduleTimeTriggers()
+        }
 
         //read the tasks
         tasks = atomicState.tasks
@@ -4488,112 +4883,125 @@ private processTasks() {
             }
         }
         
-        //then if there's any pending tasks in the tasker, we look them up too and merge them to the task list
-        if (state.tasker && state.tasker.size()) {
-            for (task in state.tasker.sort{ it.idx }) {
-                if (task.add) {
-                    def t = cleanUpMap([type: task.add, idx: idx, ownerId: task.ownerId, deviceId: task.deviceId, taskId: task.taskId, time: task.time, created: task.created, data: task.data])
-                    def n = "${task.add}:${task.ownerId}${task.deviceId ? ":${task.deviceId}" : ""}${task.taskId ? "#${task.taskId}" : ""}"
-                    idx++
-                    tasks[n] = t
-                } else if (task.del) {
-                    //delete a task
-                    def dirty = true
-                    while (dirty) {
-                        dirty = false
-                        for (it in tasks) {
-                        	if ((it.value.type == task.del) && (!task.ownerId || (it.value.ownerId == task.ownerId)) && (!task.deviceId || (task.deviceId == it.value.deviceId)) && (!task.taskId || (task.taskId == it.value.taskId))) {
-                            	tasks.remove(it.key)
-    	                        dirty = true
-                                break
-	                        }
-	                    }
-	                }
-                }
-            }
-            //we save the tasks list atomically, ouch
-            //this is to avoid spending too much time with the tasks list on our hands and having other instances
-            //running and modifying the old list that we picked up above
-            state.tasksProcessed = now()
-            atomicState.tasks = tasks
-            state.tasks = tasks
-            state.tasker = null
-        }
+        
+        def repeatCount = 0
+        
+        while (repeatCount < 2) {
+			//we allow some tasks to rerun this code because they're altering our task list...
 
-        //time to see if there is any ST schedule needed for the future
-        def nextTime = null
-        def immediateTasks = 0
-        def thresholdTime = now() + threshold
-        for (item in tasks) {
-            def task = item.value
-            //if a command task is waiting, we ignore it
-            if (!task.data || !task.data.w) {
-            	//if a task is already due, we keep track of it
-            	if (task.time <= thresholdTime) {
-	                immediateTasks++
-	            } else {
-	                //we try to get the nearest time in the future
-	                nextTime = (nextTime == null) || (nextTime > task.time) ? task.time : nextTime
-    	        }
-            }
-        }
-        //if we found a time that's after 
-        if (nextTime) {
-            def seconds = Math.round((nextTime - now()) / 1000)
-            runIn(seconds, timeHandler)
-            state.nextScheduledTime = nextTime
-            setVariable("\$nextScheduledTime", nextTime, true)
-            debug "Scheduling ST to run in ${seconds}s, at ${formatLocalTime(nextTime)}", null, "info"
-        } else {
-            setVariable("\$nextScheduledTime", null, true)
-        }
-
-        //we're done with the scheduling, let's do some real work, if we have any
-        if (immediateTasks) {
-            if (!safetyNet) {
-                //setup a safety net ST schedule to resume the process if we fail
-                safetyNet = true
-                debug "Installing ST safety net", null, "trace"
-                runIn(90, recoveryHandler)
-            }
-
-            debug "Found $immediateTasks task${immediateTasks > 1 ? "s" : ""} due at this time"
-            //we loop a seemingly infinite loop
-            //no worries, we'll break out of it, maybe :)
-            def found = true
-            while (found) {
-                found = false
-                //we need to read the list every time we get here because the loop itself takes time.
-                //we always need to work with a fresh list. Using a ? would not read the list the first time around (optimal, right?)
-                tasks = tasks ? tasks : atomicState.tasks
-                tasks = tasks ? tasks : [:]
-                def firstTask = tasks.sort{ it.value.time }.find{ (it.value.type == "cmd") && (!it.value.data || !it.value.data.w) && (it.value.time <= (now() + threshold)) }
-                if (firstTask) {
-                    def firstSubTask = tasks.sort{ it.value.idx }.find{ (it.value.type == "cmd") && (!it.value.data || !it.value.data.w) && (it.value.time == firstTask.value.time) }
-                    if (firstSubTask) {
-                        def task = firstSubTask.value
-                        //remove from tasks
-                        tasks = atomicState.tasks
-                        tasks.remove(firstSubTask.key)
-                        atomicState.tasks = tasks
-                        state.tasks = tasks
-                        //throw away the task list as this procedure below may take time, making our list stale
-                        //not to worry, we'll read it again on our next iteration
-                        tasks = null
-                        //do some work
-                        if (settings.enabled && (task.type == "cmd")) {
-                            debug "Processing command task $task"
-                            try {
-                            	processCommandTask(task)
-							} catch (e) {
-                            	debug "ERROR: Error while processing command task: $e", null, "error"
+            //then if there's any pending tasks in the tasker, we look them up too and merge them to the task list
+            if (state.tasker && state.tasker.size()) {
+                for (task in state.tasker.sort{ it.idx }) {
+                    if (task.add) {
+                        def t = cleanUpMap([type: task.add, idx: idx, ownerId: task.ownerId, deviceId: task.deviceId, taskId: task.taskId, time: task.time, created: task.created, data: task.data])
+                        def n = "${task.add}:${task.ownerId}${task.deviceId ? ":${task.deviceId}" : ""}${task.taskId ? "#${task.taskId}" : ""}"
+                        idx++
+                        tasks[n] = t
+                    } else if (task.del) {
+                        //delete a task
+                        def dirty = true
+                        while (dirty) {
+                            dirty = false
+                            for (it in tasks) {
+                                if ((it.value.type == task.del) && (!task.ownerId || (it.value.ownerId == task.ownerId)) && (!task.deviceId || (task.deviceId == it.value.deviceId)) && (!task.taskId || (task.taskId == it.value.taskId))) {
+                                    tasks.remove(it.key)
+                                    dirty = true
+                                    break
+                                }
                             }
                         }
-                        //repeat the while since we just modified the task
-                        found = true
+                    }
+                }
+                //we save the tasks list atomically, ouch
+                //this is to avoid spending too much time with the tasks list on our hands and having other instances
+                //running and modifying the old list that we picked up above
+                state.tasksProcessed = now()
+                atomicState.tasks = tasks
+                state.tasks = tasks
+                state.tasker = null
+            }
+
+            //time to see if there is any ST schedule needed for the future
+            def nextTime = null
+            def immediateTasks = 0
+            def thresholdTime = now() + threshold
+            for (item in tasks) {
+                def task = item.value
+                //if a command task is waiting, we ignore it
+                if (!task.data || !task.data.w) {
+                    //if a task is already due, we keep track of it
+                    if (task.time <= thresholdTime) {
+                        immediateTasks++
+                    } else {
+                        //we try to get the nearest time in the future
+                        nextTime = (nextTime == null) || (nextTime > task.time) ? task.time : nextTime
                     }
                 }
             }
+            //if we found a time that's after 
+            if (nextTime) {
+                def seconds = Math.round((nextTime - now()) / 1000)
+                runIn(seconds, timeHandler)
+                state.nextScheduledTime = nextTime
+                setVariable("\$nextScheduledTime", nextTime, true)
+                debug "Scheduling ST to run in ${seconds}s, at ${formatLocalTime(nextTime)}", null, "info"
+            } else {
+                setVariable("\$nextScheduledTime", null, true)
+            }
+
+            //we're done with the scheduling, let's do some real work, if we have any
+            if (immediateTasks) {
+                if (!safetyNet) {
+                    //setup a safety net ST schedule to resume the process if we fail
+                    safetyNet = true
+                    debug "Installing ST safety net", null, "trace"
+                    runIn(90, recoveryHandler)
+                }
+
+                debug "Found $immediateTasks task${immediateTasks > 1 ? "s" : ""} due at this time"
+                //we loop a seemingly infinite loop
+                //no worries, we'll break out of it, maybe :)
+                def found = true
+                while (found) {
+                    found = false
+                    //we need to read the list every time we get here because the loop itself takes time.
+                    //we always need to work with a fresh list. Using a ? would not read the list the first time around (optimal, right?)
+                    tasks = tasks ? tasks : atomicState.tasks
+                    tasks = tasks ? tasks : [:]
+                    def firstTask = tasks.sort{ it.value.time }.find{ (it.value.type == "cmd") && (!it.value.data || !it.value.data.w) && (it.value.time <= (now() + threshold)) }
+                    if (firstTask) {
+                        def firstSubTask = tasks.sort{ it.value.idx }.find{ (it.value.type == "cmd") && (!it.value.data || !it.value.data.w) && (it.value.time == firstTask.value.time) }
+                        if (firstSubTask) {
+                            def task = firstSubTask.value
+                            //remove from tasks
+                            tasks = atomicState.tasks
+                            tasks.remove(firstSubTask.key)
+                            atomicState.tasks = tasks
+                            state.tasks = tasks
+                            //throw away the task list as this procedure below may take time, making our list stale
+                            //not to worry, we'll read it again on our next iteration
+                            tasks = null
+                            //do some work
+                            
+                            
+                            def enabled = (state.app && (state.app.enabled != null) ? !!state.app.enabled : true)
+                            
+                            if (enabled && (task.type == "cmd")) {
+                                debug "Processing command task $task"
+                                try {
+                                    processCommandTask(task)
+                                } catch (e) {
+                                    debug "ERROR: Error while processing command task: $e", null, "error"
+                                }
+                            }
+                            //repeat the while since we just modified the task
+                            found = true
+                        }
+                    }
+                }
+            }
+			if (!state.rerunSchedule) break
+            repeatCount += 1
         }
         //would you look at that, we finished!
         //remove the safety net, wasn't worth the investment
@@ -4659,7 +5067,7 @@ private processCommandTask(task) {
     if (virtual) {
         //dealing with a virtual command
         command = getVirtualCommandByDisplay(cmd)
-        if (command && !command.immediate) {
+        if (command) {
         	//we can't run immediate tasks here
             //execute the virtual task
             def cn = command.name
@@ -4673,15 +5081,49 @@ private processCommandTask(task) {
 				}
             }
             def msg = "Executing virtual command ${cn}"
+            def function = "task_vcmd_${cn}".replace(" ", "_").replace("(", "_").replace(")", "_").replace("&", "_").replace("#", "_")
+            def perf = now()
+            def result = "$function"(command.aggregated ? devices : device, action, task, suffix)
+            msg += " (${now() - perf}ms)"            
             if (state.sim) state.sim.cmds.push(msg)
             debug msg, null, "info"
-            def function = "task_vcmd_${cn}".replace(" ", "_").replace("(", "_").replace(")", "_").replace("&", "_").replace("#", "_")
-            return "$function"(command.aggregated ? devices : device, task, suffix)
+            return result
         }
     } else {
+    	if (custom) {
+        	def availableParams = t.p ? t.p.size() : 0
+			def params = []
+            if (availableParams && (availableParams.mod(2) == 0)) {
+				for (def i = 0; i < Math.floor(availableParams / 2); i++) {
+                	def type = t.p[i * 2].d
+                    def value = t.p[i * 2 + 1].d
+                    params.push cast(value, type)
+                }
+            }
+            def msg = "Executing custom command: [${device}].${cmd}(${params.size() ? params : ""})"
+            def perf = now()
+            try {
+                if (params.size()) {
+                    device."${cmd}"(params as Object[])
+                } else {
+                    device."${cmd}"()
+                }
+            } catch (all) {
+            	msg += " (ERROR: $all)"
+            }
+            msg += " (${now() - perf}ms)"
+            if (state.sim) state.sim.cmds.push(msg)
+            debug msg, null, "info"
+            return true
+        }
         command = getCommandByDisplay(cmd)
         if (command) {
-            if (device.hasCommand(command.name)) {
+        	def cn = command.name
+            if (cn && cn.contains(".")) {
+            	def parts = cn.tokenize(".")
+                cn = parts[parts.size() - 1]
+            }
+            if (device.hasCommand(cn)) {
                 def requiredParams = command.parameters ? command.parameters.size() : 0
                 def availableParams = t.p ? t.p.size() : 0
                 if (requiredParams == availableParams) {
@@ -4690,7 +5132,7 @@ private processCommandTask(task) {
                         params.push(it.d instanceof String ? formatMessage(it.d) : it.d)
                     }
                     if (params.size()) {
-                    	if ((command.name == "setColor") && (params.size() == 5)) {
+                    	if ((cn == "setColor") && (params.size() == 5)) {
                         	//using a little bit of a hack here
                             //we should have 5 parameters:
                             //color name
@@ -4717,22 +5159,40 @@ private processCommandTask(task) {
                                 p.saturation = saturation
                                 p.level - lightness
                             }
-                            def msg = "Executing with parameters: [${device}].${command.name}($p)"
+                            def msg = "Executing command: [${device}].${cn}($p)"
+                            def perf = now()
+                        	try {
+                                device."${cn}"(p)
+                            } catch(all) {
+                            	msg += " (ERROR)"
+                            }
+                            msg += " (${now() - perf}ms)"
 				            if (state.sim) state.sim.cmds.push(msg)
 							debug msg, null, "info"
-                        	device."${command.name}"(p)
                         } else {
-                        	def msg = "Executing with parameters: [${device}].${command.name}($params)" 
+                        	def msg = "Executing command: [${device}].${cn}($params)" 
+                            def perf = now()
+                        	try {
+                                device."${cn}"(params as Object[])
+                            } catch(all) {
+                            	msg += " (ERROR)"
+                            }
+                            msg += " (${now() - perf}ms)"
 				            if (state.sim) state.sim.cmds.push(msg)
                         	debug msg, null, "info"
-                        	device."${command.name}"(params as Object[])
                         }
                         return true
                     } else {
-                    	def msg = "Executing: [${device}].${command.name}()"
+                    	def msg = "Executing command: [${device}].${cn}()"
+                        def perf = now()
+                        try {
+                            device."${cn}"()
+                        } catch(all) {
+                            msg += " (ERROR)"
+                        }
+                        msg += " (${now() - perf}ms)"                        
                         if (state.sim) state.sim.cmds.push(msg)
                         debug msg, null, "info"
-                        device."${command.name}"()
                         return true
                     }
                 }
@@ -4742,7 +5202,7 @@ private processCommandTask(task) {
 	return false
 }
 
-private task_vcmd_toggle(device, task, suffix = "") {
+private task_vcmd_toggle(device, action, task, suffix = "") {
     if (!device || !device.hasCommand("on$suffix") || !device.hasCommand("off$suffix")) {
     	//we need a device that has both on and off commands
     	return false
@@ -4755,7 +5215,7 @@ private task_vcmd_toggle(device, task, suffix = "") {
     return true
 }
 
-private task_vcmd_toggleLevel(device, task, suffix = "") {
+private task_vcmd_toggleLevel(device, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (!device || !device.hasCommand("on$suffix") || !device.hasCommand("off$suffix") || !device.hasCommand("setLevel") || (params.size() != 1)) {
     	//we need a device that has both on and off commands
@@ -4771,7 +5231,7 @@ private task_vcmd_toggleLevel(device, task, suffix = "") {
     return true
 }
 
-private task_vcmd_delayedToggle(device, task, suffix = "") {
+private task_vcmd_delayedToggle(device, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (!device || !device.hasCommand("on$suffix") || !device.hasCommand("off$suffix") || (params.size() != 1)) {
     	//we need a device that has both on and off commands
@@ -4786,7 +5246,7 @@ private task_vcmd_delayedToggle(device, task, suffix = "") {
     return true
 }
 
-private task_vcmd_delayedOn(device, task, suffix = "") {
+private task_vcmd_delayedOn(device, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (!device || !device.hasCommand("on$suffix") || (params.size() != 1)) {
     	//we need a device that has both on and off commands
@@ -4797,7 +5257,7 @@ private task_vcmd_delayedOn(device, task, suffix = "") {
     return true
 }
 
-private task_vcmd_delayedOff(device, task, suffix = "") {
+private task_vcmd_delayedOff(device, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (!device || !device.hasCommand("off$suffix") || (params.size() != 1)) {
     	//we need a device that has both on and off commands
@@ -4808,7 +5268,7 @@ private task_vcmd_delayedOff(device, task, suffix = "") {
     return true
 }
 
-private task_vcmd_flash(device, task, suffix = "") {
+private task_vcmd_flash(device, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (!device || !device.hasCommand("on$suffix") || !device.hasCommand("off$suffix") || (params.size() != 3)) {
     	//we need a device that has both on and off commands
@@ -4835,7 +5295,7 @@ private task_vcmd_flash(device, task, suffix = "") {
     return true
 }
 
-private task_vcmd_setLocationMode(devices, task, suffix = "") {
+private task_vcmd_setLocationMode(devices, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (params.size() != 1) {
     	return false
@@ -4850,7 +5310,7 @@ private task_vcmd_setLocationMode(devices, task, suffix = "") {
     return false
 }
 
-private task_vcmd_setAlarmSystemStatus(devices, task, suffix = "") {
+private task_vcmd_setAlarmSystemStatus(devices, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (params.size() != 1) {
     	return false
@@ -4865,7 +5325,7 @@ private task_vcmd_setAlarmSystemStatus(devices, task, suffix = "") {
     return false
 }
 
-private task_vcmd_sendNotification(device, task, suffix = "") {
+private task_vcmd_sendNotification(device, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (params.size() != 1) {
     	return false
@@ -4874,7 +5334,7 @@ private task_vcmd_sendNotification(device, task, suffix = "") {
     sendNotificationEvent(message)
 }
 
-private task_vcmd_sendPushNotification(device, task, suffix = "") {
+private task_vcmd_sendPushNotification(device, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (params.size() != 2) {
     	return false
@@ -4888,7 +5348,7 @@ private task_vcmd_sendPushNotification(device, task, suffix = "") {
 	}
 }
 
-private task_vcmd_sendSMSNotification(device, task, suffix = "") {
+private task_vcmd_sendSMSNotification(device, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (params.size() != 3) {
     	return false
@@ -4908,7 +5368,7 @@ private task_vcmd_sendSMSNotification(device, task, suffix = "") {
 }
 
 
-private task_vcmd_executeRoutine(devices, task, suffix = "") {
+private task_vcmd_executeRoutine(devices, action, task, suffix = "") {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (params.size() != 1) {
     	return false
@@ -4918,7 +5378,34 @@ private task_vcmd_executeRoutine(devices, task, suffix = "") {
     return true
 }
 
-private task_vcmd_cancelPendingTasks(device, task, suffix = "") {
+private task_vcmd_followUp(devices, action, task, suffix = "") {
+    def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
+    if (params.size() != 4) {
+    	return false
+    }
+    def piston = params[2].d
+	def result = parent.execute(piston)
+    if (params[3].d) {
+    	setVariable(params[3].d, result)
+    }
+    return true
+}
+
+private task_vcmd_executePiston(devices, action, task, suffix = "") {
+    def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
+    if (params.size() != 2) {
+    	return false
+    }
+    def piston = params[0].d
+	def result = parent.execute(piston)
+    if (params[1].d) {
+    	setVariable(params[1].d, result)
+    }
+    return true
+}
+
+private task_vcmd_cancelPendingTasks(device, action, task, suffix = "") {
+	state.rerunSchedule = true
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (!device || (params.size() != 1)) {
     	return false
@@ -4930,7 +5417,17 @@ private task_vcmd_cancelPendingTasks(device, task, suffix = "") {
     return true
 }
 
-private task_vcmd_loadAttribute(device, task, simulate = false) {
+private task_vcmd_repeatAction(device, action, task, suffix = "") {
+	state.rerunSchedule = true
+    def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
+    if (!action || (params.size() != 2)) {
+    	return false
+    }
+    scheduleAction(action)
+    return true
+}
+
+private task_vcmd_loadAttribute(device, action, task, simulate = false) {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (!device || (params.size() != 4)) {
     	return false
@@ -4942,8 +5439,53 @@ private task_vcmd_loadAttribute(device, task, simulate = false) {
     //work, work, work
     //get the real value
     def value = getVariable(variable)
+	setAttributeValue(device, attribute, value, allowTranslations, negateTranslations)
+    return true
+}
+
+private task_vcmd_loadState(device, action, task, simulate = false) {
+    def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
+    if (!device || (params.size() != 4)) {
+    	return false
+    }
+	def attributes = params[0].d
+    def variable = params[1].d
+    def value = getStateVariable(variable)
+    def allowTranslations = !!params[2].d
+    def negateTranslations = !!params[3].d   
+    //work, work, work
+    //get the real value
+    for(attribute in attributes.sort{ it }) {   	
+		setAttributeValue(device, cleanUpAttribute(attribute), value, allowTranslations, negateTranslations)
+    }
+    return true
+}
+
+private task_vcmd_loadStateLocally(device, action, task, simulate = false, global = false) {
+    def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
+    if (!device || !device.id || (params.size() != 1)) {
+    	return false
+    }
+	def attributes = params[0].d
+    def values = getStateVariable("${ global ? "@" : "" }:::${device.id}:::")
+    debug "Load from state: attributes are $attributes, values are $values"
+    if (values instanceof Map) {
+    	for(attribute in attributes.sort { it }) {
+        	def cleanAttribute = cleanUpAttribute(attribute)
+            if (values[cleanAttribute] != null) {
+				setAttributeValue(device, cleanAttribute, values[cleanAttribute], false, false)
+            }
+	    }
+    }
+    return true
+}
+
+private task_vcmd_loadStateGlobally(device, action, task, simulate = false) {
+	return task_vcmd_loadStateLocally(device, action, task, simulate, true)
+}
+
+private setAttributeValue(device, attribute, value, allowTranslations, negateTranslations) {
     def commands = commands().findAll{ (it.attribute == attribute) && it.value }
-    log.trace "Possible commands are: ${commands*.name}"
     //oh boy, we can pick and choose...
     for (command in commands) {
     	if (command.value.startsWith("*")) {
@@ -4954,7 +5496,7 @@ private task_vcmd_loadAttribute(device, task, simulate = false) {
                     v = cast(v, parts[1])
                 }
                 if (device.hasCommand(command.name)) {
-                    log.trace "Executing [${getDeviceLabel(device)}].$command($v)"
+                    debug "Executing [${getDeviceLabel(device)}].${command.name}($v)", null, "info"
                     device."${command.name}"(v)
                     return true
                 }
@@ -4963,7 +5505,7 @@ private task_vcmd_loadAttribute(device, task, simulate = false) {
             if ((command.value == value) && (!command.parameters)) {
                 //found an exact match, let's do it
                 if (device.hasCommand(command.name)) {
-                    log.trace "Executing [${getDeviceLabel(device)}].$command()"
+                    debug "Executing [${getDeviceLabel(device)}].${command.name}()", null, "info"
                     device."${command.name}"()
                     return true
                 }
@@ -4979,17 +5521,16 @@ private task_vcmd_loadAttribute(device, task, simulate = false) {
             if ((cast(command.value, "boolean") == v) && (!command.parameters)) {
                 //found an exact match, let's do it
                 if (device.hasCommand(command.name)) {
-                    log.trace "Executing [${getDeviceLabel(device)}].$command() (boolean translation)"
+                    debug "Executing [${getDeviceLabel(device)}].${command.name}() (boolean translation)", null, "info"
                     device."${command.name}"()
                     return true
                 }
             }
         }
     }
-    return false
 }
 
-private task_vcmd_saveAttribute(devices, task, simulate = false) {
+private task_vcmd_saveAttribute(devices, action, task, simulate = false) {
     def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
     if (!devices || (params.size() != 4)) {
     	return false
@@ -4999,6 +5540,51 @@ private task_vcmd_saveAttribute(devices, task, simulate = false) {
     def dataType = params[2].d
     def variable = params[3].d    
     //work, work, work
+	def result = getAggregatedAttributeValue(devices, attribute, aggregation, dataType)
+    setVariable(variable, result)
+    return true
+}
+
+private task_vcmd_saveState(devices, action, task, simulate = false) {
+    def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
+    if (!devices || (params.size() != 4)) {
+    	return false
+    }
+	def attributes = params[0].d
+    def aggregation = params[1].d
+    def dataType = params[2].d
+    def variable = params[3].d    
+    //work, work, work
+	def values = [:]
+    for (attribute in attributes) {
+    	def cleanAttribute = cleanUpAttribute(attribute)
+    	values[cleanAttribute] = getAggregatedAttributeValue(devices, cleanAttribute, aggregation, dataType)
+    }
+    setStateVariable(variable, values)
+    return true
+}
+
+private task_vcmd_saveStateLocally(device, action, task, simulate = false, global = false) {
+    def params = (task && task.data && task.data.p && task.data.p.size()) ? task.data.p : []
+    if (!device || !device.id || (params.size() != 1)) {
+    	return false
+    }
+	def attributes = params[0].d
+	def values = [:]
+    for (attribute in attributes) {
+       	def cleanAttribute = cleanUpAttribute(attribute)
+    	values[cleanAttribute] = device.currentValue(cleanAttribute)
+    }
+    debug "Save to state: attributes are $attributes, values are $values"
+	setStateVariable("${ global ? "@" : "" }:::${device.id}:::", values)
+    return true
+}
+
+private task_vcmd_saveStateGlobally(device, action, task, simulate = false) {
+	return task_vcmd_saveStateGlobally(device, action, task, simulate, true)
+}
+
+private getAggregatedAttributeValue(devices, attribute, aggregation, dataType) {
     def result
     def attr = getAttributeByName(attribute)
     if (attr) {
@@ -5104,12 +5690,11 @@ private task_vcmd_saveAttribute(devices, task, simulate = false) {
     	//if user wants a certain data type, we comply
     	result = cast(result, dataType)
     }
-    setVariable(variable, result)
-    return true
+    
+    return result
 }
 
-
-private task_vcmd_setVariable(devices, task, simulate = false) {
+private task_vcmd_setVariable(devices, action, task, simulate = false) {
     def params = simulate ? ((task && task.p && task.p.size()) ? task.p : []) : ((task && task.data && task.data.p && task.data.p.size()) ? task.data.p : [])
 	//we need at least 7 params
 	if (params.size() < 7) {
@@ -5418,7 +6003,51 @@ def getConditionStats() {
     ]
 }
 
+def getPistonApp() {
+	return state.app
+}
 
+def getPistonType() {
+	return state.app.mode
+}
+
+def getPistonTasks() {
+	return atomicState.tasks
+}
+
+def getPistonConditionDescription(condition) {
+	return (condition ? getConditionDescription(condition.id) : null)
+}
+
+def getSummary() {
+	return [
+    	i: app.id,        
+    	l: app.label,
+        d: state.app.description,
+        e: !!state.app.enabled,
+        m: state.app.mode,
+        s: state.currentState,
+        ss: state.currentStateSince,
+        n: state.nextScheduledTime,
+        d: state.deviceSubscriptions ? state.deviceSubscriptions : 0,
+        c: getConditionCount(state.app),
+        t: getTriggerCount(state.app),
+        le: state.lastEvent,
+        lx: state.lastExecutionTime
+    ]
+}
+
+def pause() {
+	state.app.enabled = false
+    if (state.config && state.config.app) state.config.app.enabled = false
+}
+
+def resume() {
+	state.app.enabled = true
+    if (state.config && state.config.app) state.config.app.enabled = true
+    state.run = "app"    
+    processTasks()
+}
 
 
 
@@ -5833,6 +6462,7 @@ private timeToMinutes(time) {
     if (value.isInteger()) {
     	return value.toInteger()
     }
+    debug "ERROR: Time '$time' could not be parsed", null, "error"
     return 0
 }
 
@@ -6014,32 +6644,33 @@ private getConditionTriggerCount(condition) {
     return result
 }
 
-private withEachCondition(condition, callback) {
+private withEachCondition(condition, callback, data = null, includeGroups = false) {
 	def result = 0
     if (condition) {
         if (condition.children != null) {
             //we're dealing with a group
+            if (includeGroups) "$callback"(condition, data)
             for (child in condition.children) {
-                withEachCondition(child, callback)
+                withEachCondition(child, callback, data)
             }
         } else {
-           	"$callback"(condition)
+           	"$callback"(condition, data)
         }
     }
     return result
 }
 
-private withEachTrigger(condition, callback) {
+private withEachTrigger(condition, callback, data = null) {
 	def result = 0
     if (condition) {
         if (condition.children != null) {
             //we're dealing with a group
             for (child in condition.children) {
-                withEachTrigger(child, callback)
+                withEachTrigger(child, callback, data)
             }
         } else {
         	if (condition.trg) {
-            	"$callback"(condition)
+            	"$callback"(condition, data)
             }
         }
     }
@@ -6073,7 +6704,7 @@ private getConditionConditionCount(condition) {
 }
 
 private getConditionCount(app) {
-	return getConditionConditionCount(app.conditions) + (settings.mode != "Simple" ? getConditionConditionCount(app.otherConditions) : 0)
+	return getConditionConditionCount(app.conditions) + (!(settings.mode in ["Simple", "Follow-Up"]) ? getConditionConditionCount(app.otherConditions) : 0)
 }
 
 //cleans up conditions - this may be replaced by a complete rebuild of the app object from the settings
@@ -6165,15 +6796,19 @@ private getConditionDescription(id, level = 0) {
         if (virtualDevice || (devices && devices.size())) {
             def evaluation = (virtualDevice ? "" : (devices.size() > 1 ? (condition.mode == "All" ? "Each of " : "Any of ") : ""))
             def deviceList = (virtualDevice ? (capability.virtualDeviceName ? capability.virtualDeviceName : virtualDevice.name) : buildDeviceNameList(devices, "or")) + " "
+            if (condition.attr == "variable") {
+            	deviceList = "Variable ${condition.var ? "{${condition.var}} " : ""} (as ${condition.dt}) "
+            }
 	        def attribute = condition.attr + " "
             def attr = getAttributeByName(condition.attr)
             def unit = (attr && attr.unit ? attr.unit : "")
             def comparison = cleanUpComparison(condition.comp)
-            def comp = getComparisonOption(condition.attr, comparison)
+            //override comparison option type if we're dealing with a variable - take the variable's data type
+            def comp = getComparisonOption(condition.attr, comparison, condition.attr == "variable" ? condition.dt : null)
             def subDevices = capability.count && attr && (attr.name == capability.attribute) ? buildNameList(condition.sdev, "or") + " " : ""
             def values = " [ERROR]"
             def time = ""
-            if (comp) {
+            if (comp) {            	
             	switch (comp.parameters) {
                 	case 0:
                     	values = ""
@@ -6706,8 +7341,32 @@ private listCommonDeviceAttributes(devices) {
     		list[attribute.name] = 0
         }
     }
+
+	for (device in devices) {    
+    	if (device.hasCommand("describeAttributes")) {
+	    	def payload = [attributes: null]
+            device.describeAttributes(payload)
+            if ((payload.attributes instanceof List) && payload.attributes.size()) {
+				if (!state.customAttributes) state.customAttributes = [:]
+            	//save the custom attributes
+            	for( def customAttribute in payload.attributes) {
+                	if (customAttribute.name && customAttribute.type) {
+                        state.customAttributes[customAttribute.name] = customAttribute
+                    }
+                }
+            }
+        }
+    }
+
+	//add known custom attributes to the standard list
+	if (state.customAttributes) {
+    	for(def customAttribute in state.customAttributes) {
+        	list[customAttribute.key] = 0
+        }
+    }
+
 	//get supported attributes
-    for (device in devices) {
+    for (device in devices) {    
     	def attrs = device.supportedAttributes
         for (attr in attrs) {        	
         	if (list.containsKey(attr.name)) {
@@ -6871,11 +7530,20 @@ private getCapabilityByDisplay(display) {
 
 private getAttributeByName(name) {
 	def name2 = name instanceof String ? name.replaceAll("[\\d]", "").trim() + "*" : null
+    def attribute = attributes().find{ (it.name == name) || (name2 && (it.name == name2)) }
+    if (attribute) return attribute
+    if (state.customAttributes) {
+    	def item = state.customAttributes.find{ it.key == name }
+        if (item) return item.value
+    }
+    /*
     for (attribute in attributes()) {
     	if ((attribute.name == name) || (name2 && (attribute.name == name2))) {
         	return attribute
         }
     }
+    */
+    //give up, return whatever...
     return [ name: name, type: "text", range: null, unit: null, options: null]
 }
 
@@ -7037,7 +7705,7 @@ private parseCommandParameter(parameter) {
         dataType = tokens[tokens.size() - 1]
     }
 
-    if (dataType in ["attribute", "attributes", "variable", "variables", "routine", "aggregation", "dataType"]) {
+    if (dataType in ["attribute", "attributes", "variable", "variables", "routine", "piston", "aggregation", "dataType"]) {
     	//special case handled internally
         return [title: title, type: dataType, required: required, last: last]
     }
@@ -7269,7 +7937,7 @@ private commands() {
     	[ name: "resumeTrack",								category: "Entertainment",				group: "Control [devices]",			display: "Resume track",				parameters: [], ],
     	[ name: "restoreTrack",								category: "Entertainment",				group: "Control [devices]",			display: "Restore track",				parameters: [], ],
     	[ name: "speak",									category: "Entertainment",				group: "Control [devices]",			display: "Speak",						parameters: ["Message:string"], description: "Speak \"{0}\"", ],
-    	[ name: "startActivity",							category: "Entertainment",				group: "Control [devices]",			display: "Start activity",				parameters: [], ],
+    	[ name: "startActivity",							category: "Entertainment",				group: "Control [devices]",			display: "Start activity",				parameters: ["Activity:string"], description: "Start activity\"{0}\"",	],
     	[ name: "getCurrentActivity",						category: "Entertainment",				group: "Control [devices]",			display: "Get current activity",		parameters: [], ],
     	[ name: "getAllActivities",							category: "Entertainment",				group: "Control [devices]",			display: "Get all activities",			parameters: [], ],
     	[ name: "push",										category: "Other",						group: "Control [devices]",			display: "Push",						parameters: [], ],
@@ -7283,6 +7951,22 @@ private commands() {
 		[ name: "configure",								category: null,							group: null,						display: "Configure",					parameters: [], ],
     	[ name: "poll",										category: null,							group: null,						display: "Poll",						parameters: [], ],
     	[ name: "refresh",									category: null,							group: null,						display: "Refresh",						parameters: [], ],
+        /* predfined commands below */
+        //general
+    	[ name: "reset",									category: null,							group: null,						display: "Reset",						parameters: [], ],
+        //hue
+    	[ name: "startLoop",								category: null,							group: null,						display: "Start color loop",			parameters: [], ],
+    	[ name: "stopLoop",									category: null,							group: null,						display: "Stop color loop",				parameters: [], ],
+    	[ name: "setLoopTime",								category: null,							group: null,						display: "Set loop duration",			parameters: ["Duration [s]:number[1..*]"], description: "Set loop duration to {0}s"],
+    	[ name: "setDirection",								category: null,							group: null,						display: "Switch loop direction",		parameters: [], description: "Set loop duration to {0}s"],
+    	[ name: "alert",									category: null,							group: null,						display: "Alert with lights",			parameters: ["Method:enum[Blink,Breathe,Okay,Stop]"], description: "Alert with lights: {0}"],
+    	[ name: "setAdjustedColor",							category: null,							group: null,						display: "Transition to color",			parameters: ["Color:color","Duration [s]:number[1..60]"], description: "Transition to color in {1}s"],
+        //harmony
+    	[ name: "allOn",									category: null,							group: null,						display: "Turn all on",					parameters: [], ],
+    	[ name: "allOff",									category: null,							group: null,						display: "Turn all off",				parameters: [], ],
+    	[ name: "hubOn",									category: null,							group: null,						display: "Turn hub on",					parameters: [], ],
+    	[ name: "hubOff",									category: null,							group: null,						display: "Turn hub off",				parameters: [], ],
+        
     ]
 }
 
@@ -7337,23 +8021,26 @@ private virtualCommands() {
     	[ name: "flash#6",				requires: ["on6", "off6"], 			display: "Flash #6",						parameters: ["On interval (milliseconds):number[250..5000]","Off interval (milliseconds):number[250..5000]","Number of flashes:number[1..10]"],					description: "Flash #6 {0}ms/{1}ms for {2} time(s)",	],
     	[ name: "flash#7",				requires: ["on7", "off7"], 			display: "Flash #7",						parameters: ["On interval (milliseconds):number[250..5000]","Off interval (milliseconds):number[250..5000]","Number of flashes:number[1..10]"],					description: "Flash #7 {0}ms/{1}ms for {2} time(s)",	],
     	[ name: "flash#8",				requires: ["on8", "off8"], 			display: "Flash #8",						parameters: ["On interval (milliseconds):number[250..5000]","Off interval (milliseconds):number[250..5000]","Number of flashes:number[1..10]"],					description: "Flash #8 {0}ms/{1}ms for {2} time(s)",	],
-    	[ name: "setVariable",			requires: [],			 			display: "Set variable", 					parameters: ["Variable:var"],																				varEntry: 0, 						location: true,															aggregated: true,	],
-    	[ name: "saveAttribute",		requires: [],			 			display: "Save attribute to variable", 		parameters: ["Attribute:attribute","Aggregation:aggregation","?Convert to data type:dataType","Save to variable:string"],					varEntry: 3,		description: "Save attribute '{0}' to variable {3}",	aggregated: true,	],
-    	[ name: "saveState",			requires: [],			 			display: "Save state to variable",			parameters: ["Attributes:attributes","Save to state variable...:string"],												varEntry: 1,																				aggregated: true,	],
-        [ name: "saveStateLocally",		requires: [],			 			display: "Save state",																																																											aggregated: true,	],
-    	[ name: "saveStateGlobally",	requires: [],			 			display: "Save state (global)",																																																									aggregated: true,	],
-    	[ name: "loadAttribute",		requires: [],			 			display: "Load attribute from variable",	parameters: ["Attribute:attribute","Load from variable...:variable","Allow translations:bool","Negate translation:bool"],																								],
-    	[ name: "loadState",			requires: [],			 			display: "Load state from variable",		parameters: ["Load from state variable...:stateVariable","Attributes:attributes"],																								],
-    	[ name: "loadStateLocally",		requires: [],			 			display: "Load state",						parameters: ["Attributes:attributes"],																															],
-    	[ name: "loadStateGlobally",	requires: [],			 			display: "Load state (global)",				parameters: ["Attributes:attributes"],																															],
+    	[ name: "setVariable",			requires: [],			 			display: "Set variable", 					parameters: ["Variable:var"],																				varEntry: 0, 						location: true,																	aggregated: true,	],
+    	[ name: "saveAttribute",		requires: [],			 			display: "Save attribute to variable", 		parameters: ["Attribute:attribute","Aggregation:aggregation","?Convert to data type:dataType","Save to variable:string"],					varEntry: 3,		description: "Save attribute '{0}' to variable {{3}}",			aggregated: true,	],
+    	[ name: "saveState",			requires: [],			 			display: "Save state to variable",			parameters: ["Attributes:attributes","Aggregation:aggregation","?Convert to data type:dataType","Save to state variable:string"],			stateVarEntry: 3,	description: "Save state of attributes {0} to variable {{3}}",	aggregated: true,	],
+        [ name: "saveStateLocally",		requires: [],			 			display: "Save state to local store",		parameters: ["Attributes:attributes"],																															description: "Save state of attributes {0} to local store",							],
+    	[ name: "saveStateGlobally",	requires: [],			 			display: "Save state to global store",		parameters: ["Attributes:attributes"],																															description: "Save state of attributes {0} to global store",						],
+    	[ name: "loadAttribute",		requires: [],			 			display: "Load attribute from variable",	parameters: ["Attribute:attribute","Load from variable:variable","Allow translations:bool","Negate translation:bool"],											description: "Load attribute '{0}' from variable {{1}}",	],
+    	[ name: "loadState",			requires: [],			 			display: "Load state from variable",		parameters: ["Attributes:attributes","Load from state variable:stateVariable","Allow translations:bool","Negate translation:bool"],								description: "Load state of attributes {0} from variable {{1}}"														],
+    	[ name: "loadStateLocally",		requires: [],			 			display: "Load state from local store",		parameters: ["Attributes:attributes"],																															description: "Load state of attributes {0} from local store",													],
+    	[ name: "loadStateGlobally",	requires: [],			 			display: "Load state from global store",	parameters: ["Attributes:attributes"],																															description: "Load state of attributes {0} from global store",													],
     	[ name: "setLocationMode",		requires: [],			 			display: "Set location mode",				parameters: ["Mode:mode"],																														location: true,	description: "Set location mode to \"{0}\"",		aggregated: true,	],
     	[ name: "setAlarmSystemStatus",	requires: [],			 			display: "Set Smart Home Monitor status",	parameters: ["Status:alarmSystemStatus"],																										location: true,	description: "Set SHM alarm to \"{0}\"",			aggregated: true,	],
-    	[ name: "sendNotification",		requires: [],			 			display: "Send notification",				parameters: ["Message:text"],																													location: true,	description: "Send notification \"{0}\"",	],
+    	[ name: "sendNotification",		requires: [],			 			display: "Send notification",				parameters: ["Message:text"],																													location: true,	description: "Send notification \"{0}\"",			aggregated: true,	],
     	//[ name: "sendNotificationToContacts",requires: [],		 			display: "Send notification to contacts",	parameters: ["Message:text","Contacts:contact","Save notification:bool"],																		location: true,	],
-    	[ name: "sendPushNotification",	requires: [],			 			display: "Send Push notification",			parameters: ["Message:text","Save notification:bool"],																							location: true,	description: "Send Push notification \"{0}\"",	],
-    	[ name: "sendSMSNotification",	requires: [],			 			display: "Send SMS notification",			parameters: ["Message:text","Phone number:phone","Save notification:bool"],																		location: true, description: "Send SMS notification \"{0}\" to {1}",	],
+    	[ name: "sendPushNotification",	requires: [],			 			display: "Send Push notification",			parameters: ["Message:text","Save notification:bool"],																							location: true,	description: "Send Push notification \"{0}\"",		aggregated: true,	],
+    	[ name: "sendSMSNotification",	requires: [],			 			display: "Send SMS notification",			parameters: ["Message:text","Phone number:phone","Save notification:bool"],																		location: true, description: "Send SMS notification \"{0}\" to {1}",aggregated: true,	],
     	[ name: "executeRoutine",		requires: [],			 			display: "Execute routine",					parameters: ["Routine:routine"],																		location: true, 										description: "Execute routine \"{0}\"",				aggregated: true,	],
         [ name: "cancelPendingTasks",	requires: [],			 			display: "Cancel pending tasks",			parameters: ["Scope:enum[Local,Global]"],																														description: "Cancel all pending {0} tasks",		],
+        [ name: "repeatAction",			requires: [],						display: "Repeat whole action",				parameters: ["Interval:number[1..1440]","Unit:enum[seconds,minutes,hours]"],													immediate: true,	location: true,	description: "Repeat whole action every {0} {1}",	aggregated: true],
+        [ name: "followUp",				requires: [],						display: "Follow up with piston",			parameters: ["Delay:number[1..1440]","Unit:enum[seconds,minutes,hours]","Piston:piston","?Save state into variable:string"],	immediate: true,	varEntry: 3,	location: true,	description: "Follow up with piston \"{2}\" after {0} {1}",	aggregated: true],
+        [ name: "executePiston",		requires: [],						display: "Execute piston",					parameters: ["Piston:piston","?Save state into variable:string"],																varEntry: 1,	location: true,	description: "Execute piston \"{0}\"",	aggregated: true],
     ]
 }
 
@@ -7423,7 +8110,8 @@ private attributes() {
     	[ name: "mode",						type: "mode",				range: null,			unit: null,		options: state.run == "config" ? getLocationModeOptions() : [],																					],
     	[ name: "alarmSystemStatus",		type: "enum",				range: null,			unit: null,		options: state.run == "config" ? getAlarmSystemStatusOptions() : [],																		],
     	[ name: "routineExecuted",			type: "routine",			range: null,			unit: null,		options: state.run == "config" ? location.helloHome?.getPhrases()*.label : [],															],
-    	[ name: "variable",					type: "enum",				range: null,			unit: null,		options: state.run == "config" ? listVariables(true, null, true, true, true, false) : [],												],
+    	[ name: "variable",					type: "enum",				range: null,			unit: null,		options: state.run == "config" ? listVariables(true) : [],												],
+    	[ name: "stateVariable",			type: "enum",				range: null,			unit: null,		options: state.run == "config" ? listStateVariables(true) : [],												],
     	[ name: "time",						type: "time",				range: null,			unit: null,		options: null,																								],
     ]
     return state.temp.attributes
@@ -7447,8 +8135,8 @@ private comparisons() {
 	]
     
 	def optionsBool = [
-        [ condition: "is", parameters: 1, timed: false],
-        [ condition: "is not", parameters: 1, timed: false],
+        [ condition: "is equal to", parameters: 1, timed: false],
+        [ condition: "is not equal to", parameters: 1, timed: false],
         [ condition: "is true", parameters: 0, timed: false],
         [ condition: "is false", parameters: 0, timed: false],
     ]
@@ -7561,6 +8249,8 @@ private initialSystemStore() {
         "\$randomColor": "#FFFFFF",
         "\$randomColorName": "White",
         "\$randomLevel": 0,
+        "\$time": "",
+        "\$time24": "",
 	]
 }
 
